@@ -1,0 +1,105 @@
+Build.dependencies({"git", "rustc", "cargo"})
+
+Build.metric(
+  "nightly version",
+  string.gsub(Build.check_output({"rustc", "+nightly", "--version"}).stdout, '^%s*(.*)%s*$', '%1')
+)
+
+Step.start("build")
+Build.run({"cargo", "+nightly", "build", "--release"}, {env={RUSTFLAGS="-Z plt=yes"}})
+
+Step.start("metrics")
+Build.metric(
+  "total size",
+  Build.environment.size("target/release/dav1d")
+)
+-- Build.metric(
+--  "mc size",
+--  Build.check_output({
+--    "bash", "-c",
+--    "readelf -s -c --wide ./target/release/dav1d | grep 5recon.*mc | grep -o '[0-9]* FUNC' | grep -o '[0-9]*' | awk '{s+=\\$1} END {print s}'"})
+--)
+-- Build.metric(
+--  "decode_coefs size",
+--  Build.check_output({
+--    "bash", "-c",
+--    "readelf -s -c --wide ./target/release/dav1d | grep decode_ceofs | grep -o '[0-9]* FUNC' | grep -o '[0-9]*' | awk '{s+=\\$1} END {print s}'"})
+--)
+-- Build.metric(
+--  "decode_b size",
+--  Build.check_output({
+--    "bash", "-c",
+--    "readelf -s -c --wide ./target/release/dav1d | grep decode_b | grep -o '[0-9]* FUNC' | grep -o '[0-9]*' | awk '{s+=\\$1} END {print s}'"})
+--)
+-- Build.metric(
+--  "rav1d_cdef_brow size",
+--  Build.check_output({
+--    "bash", "-c",
+--    "readelf -s -c --wide ./target/release/dav1d | grep rav1d_cdef_brow | grep -o '[0-9]* FUNC' | grep -o '[0-9]*' | awk '{s+=\\$1} END {print s}'"})
+--)
+
+Step.start("perf (multithread)")
+
+bench_start = Build.now_ms()
+Build.run({"./target/release/dav1d", "-q", "-i", "/files/Chimera-AV1-8bit-1920x1080-6736kbps.ivf", "-o", "/dev/null"})
+bench_end = Build.now_ms()
+Build.metric("uninstrumented runtime (ms) (multithread)", bench_end - bench_start)
+
+bench_start = Build.now_ms()
+perf_out = Build.check_output({
+  "/files/perf", "stat", "-x", ";", "-e",
+  "cycles,instructions,cpu-clock,stalled-cycles-frontend,stalled-cycles-backend,ic_cache_fill_l2,ic_cache_fill_sys,ic_tag_hit_miss.all_instruction_cache_accesses,ic_tag_hit_miss.instruction_cache_miss,ls_dispatch.all",
+  "./target/release/dav1d", "-q", "-i", "/files/Chimera-AV1-8bit-1920x1080-6736kbps.ivf", "-o", "/dev/null"
+})
+bench_end = Build.now_ms()
+
+measurements = {}
+
+for count, unit, name in perf_out.stderr:gmatch("([^;]*);([^;]*);([^;]*)[^\n]*\n?") do
+  if name ~= nil and name ~= "" then
+    measurements[name] = tonumber(count)
+    Build.metric("multithread " .. name, tonumber(count))
+  end
+end
+
+ipc = measurements["instructions"] / measurements["cycles"]
+hz = measurements["cycles"] / measurements["cpu-clock"]
+backend_stall_pct = measurements["stalled-cycles-backend"] / measurements["cycles"]
+frontend_stall_pct = measurements["stalled-cycles-frontend"] / measurements["cycles"]
+Build.metric("multithread IPC", string.format("%.3f", ipc))
+Build.metric("multithread GHz", string.format("%.3f", hz / 1000000))
+Build.metric("multithread Backend stall %", string.format("%.3f", backend_stall_pct * 100))
+Build.metric("multithread Frontend stall %", string.format("%.3f", frontend_stall_pct * 100))
+
+Step.start("perf (singlethread)")
+
+bench_start = Build.now_ms()
+Build.run({"taskset", "-ac", "1", "./target/release/dav1d", "-q", "-i", "/files/Chimera-AV1-8bit-1920x1080-6736kbps.ivf", "-o", "/dev/null", "--thread=1"})
+bench_end = Build.now_ms()
+Build.metric("uninstrumented runtime (ms) (singlethread)", bench_end - bench_start)
+
+bench_start = Build.now_ms()
+perf_out = Build.check_output({
+  "/files/perf", "stat", "-x", ";", "-e",
+  "cycles,instructions,cpu-clock,stalled-cycles-frontend,stalled-cycles-backend,ic_cache_fill_l2,ic_cache_fill_sys,ic_tag_hit_miss.all_instruction_cache_accesses,ic_tag_hit_miss.instruction_cache_miss,ls_dispatch.all",
+  "taskset", "-ac", "1", "./target/release/dav1d", "-q", "-i", "/files/Chimera-AV1-8bit-1920x1080-6736kbps.ivf", "-o", "/dev/null", "--thread=1"
+})
+bench_end = Build.now_ms()
+
+measurements = {}
+
+for count, unit, name in perf_out.stderr:gmatch("([^;]*);([^;]*);([^;]*)[^\n]*\n?") do
+  if name ~= nil and name ~= "" then
+    measurements[name] = tonumber(count)
+    Build.metric("singlethread " .. name, tonumber(count))
+  end
+end
+
+ipc = measurements["instructions"] / measurements["cycles"]
+hz = measurements["cycles"] / measurements["cpu-clock"]
+backend_stall_pct = measurements["stalled-cycles-backend"] / measurements["cycles"]
+frontend_stall_pct = measurements["stalled-cycles-frontend"] / measurements["cycles"]
+Build.metric("singlethread IPC", string.format("%.3f", ipc))
+Build.metric("singlethread GHz", string.format("%.3f", hz / 1000000))
+Build.metric("singlethread Backend stall %", string.format("%.3f", backend_stall_pct * 100))
+Build.metric("singlethread Frontend stall %", string.format("%.3f", frontend_stall_pct * 100))
