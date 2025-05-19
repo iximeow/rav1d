@@ -450,16 +450,26 @@ pub(crate) fn rav1d_create_lf_mask_intra(
     let by4 = by & 31;
 
     if bw4 != 0 && bh4 != 0 {
-        let mut level_cache_off = by * b4_stride + bx;
+        let level_cache_off = by * b4_stride + bx;
+
+        let start_idx = level_cache_off;
+
+        let filter_val = [
+            filter_level[0][0][0],
+            filter_level[1][0][0],
+        ];
+
+        let lvl_buf = &mut *level_cache.index_mut(start_idx * 4..);
+        let mut lp = lvl_buf.as_mut_ptr();
+
         for _y in 0..bh4 {
-            for x in 0..bw4 {
-                let idx = 4 * (level_cache_off + x);
-                // `0.., ..2` is for Y
-                let lvl = &mut *level_cache.index_mut((idx + 0.., ..2));
-                lvl[0] = filter_level[0][0][0];
-                lvl[1] = filter_level[1][0][0];
+            for _x in 0..bw4 {
+                // probably a rustc issue: loves decomposing this store into a pair of movs...
+                unsafe { std::ptr::write_unaligned(lp as *mut u16, u16::from_le_bytes(filter_val)); }
+
+                lp = unsafe { lp.offset(4) };
             }
-            level_cache_off += b4_stride;
+            lp = unsafe { lp.offset(b4_stride as isize * 4) };
         }
 
         mask_edges_intra(&lflvl.filter_y, by4, bx4, bw4, bh4, ytx, ay, ly);
@@ -488,16 +498,28 @@ pub(crate) fn rav1d_create_lf_mask_intra(
     let cbx4 = bx4 >> ss_hor;
     let cby4 = by4 >> ss_ver;
 
-    let mut level_cache_off = (by >> ss_ver) * b4_stride + (bx >> ss_hor);
+    let level_cache_off = (by >> ss_ver) * b4_stride + (bx >> ss_hor);
+
+    let start_idx = level_cache_off;
+
+    let filter_val = [
+        filter_level[2][0][0],
+        filter_level[3][0][0],
+    ];
+
+    // we're storing to elements 2 and 3 of each consecutive 4-element struct
+    // so offset by 2 to start here..
+    let lvl_buf = &mut *level_cache.index_mut(start_idx * 4 + 2..);
+    let mut lp = lvl_buf.as_mut_ptr();
+
     for _y in 0..cbh4 {
-        for x in 0..cbw4 {
-            let idx = 4 * (level_cache_off + x);
-            // `2.., ..2` is for UV
-            let lvl = &mut *level_cache.index_mut((idx + 2.., ..2));
-            lvl[0] = filter_level[2][0][0];
-            lvl[1] = filter_level[3][0][0];
+        for _x in 0..cbw4 {
+            // probably a rustc issue: loves decomposing this store into a pair of movs...
+            unsafe { std::ptr::write_unaligned(lp as *mut u16, u16::from_le_bytes(filter_val)); }
+
+            lp = unsafe { lp.offset(4) };
         }
-        level_cache_off += b4_stride;
+        lp = unsafe { lp.offset(b4_stride as isize * 4) };
     }
 
     mask_edges_chroma(
@@ -548,16 +570,26 @@ pub(crate) fn rav1d_create_lf_mask_inter(
     let by4 = by & 31;
 
     if bw4 != 0 && bh4 != 0 {
-        let mut level_cache_off = by * b4_stride + bx;
+        let level_cache_off = by * b4_stride + bx;
+
+        let start_idx = level_cache_off;
+
+        let filter_val: [u8; 2] = [
+            filter_level[0][r#ref][is_gmv],
+            filter_level[1][r#ref][is_gmv],
+        ];
+
+        let lvl_buf = &mut *level_cache.index_mut(start_idx * 4..);
+        let mut lp = lvl_buf.as_mut_ptr();
+
         for _y in 0..bh4 {
-            for x in 0..bw4 {
-                let idx = 4 * (level_cache_off + x);
-                // `0.., ..2` is for Y
-                let lvl = &mut *level_cache.index_mut((idx + 0.., ..2));
-                lvl[0] = filter_level[0][r#ref][is_gmv];
-                lvl[1] = filter_level[1][r#ref][is_gmv];
+            for _x in 0..bw4 {
+                // probably a rustc issue: loves decomposing this store into a pair of movs...
+                unsafe { std::ptr::write_unaligned(lp as *mut u16, u16::from_le_bytes(filter_val)); }
+
+                lp = unsafe { lp.offset(4) };
             }
-            level_cache_off += b4_stride;
+            lp = unsafe { lp.offset(b4_stride as isize * 4) };
         }
 
         mask_edges_inter(
@@ -597,16 +629,28 @@ pub(crate) fn rav1d_create_lf_mask_inter(
     let cbx4 = bx4 >> ss_hor;
     let cby4 = by4 >> ss_ver;
 
-    let mut level_cache_off = (by >> ss_ver) * b4_stride + (bx >> ss_hor);
+    let level_cache_off = (by >> ss_ver) * b4_stride + (bx >> ss_hor);
+
+    let start_idx = level_cache_off;
+
+    let filter_val: [u8; 2] = [
+        filter_level[2][r#ref][is_gmv],
+        filter_level[3][r#ref][is_gmv],
+    ];
+
+    // we're storing to elements 2 and 3 of each consecutive 4-element struct
+    // so offset by 2 to start here..
+    let lvl_buf = &mut *level_cache.index_mut(start_idx * 4 + 2..);
+    let mut lp = lvl_buf.as_mut_ptr();
+
     for _y in 0..cbh4 {
-        for x in 0..cbw4 {
-            let idx = 4 * (level_cache_off + x);
-            // `2.., ..2` is for UV
-            let lvl = &mut *level_cache.index_mut((idx + 2.., ..2));
-            lvl[0] = filter_level[2][r#ref][is_gmv];
-            lvl[1] = filter_level[3][r#ref][is_gmv];
+        for _x in 0..cbw4 {
+            // probably a rustc issue: loves decomposing this store into a pair of movs...
+            unsafe { std::ptr::write_unaligned(lp as *mut u16, u16::from_le_bytes(filter_val)); }
+
+            lp = unsafe { lp.offset(4) };
         }
-        level_cache_off += b4_stride;
+        lp = unsafe { lp.offset(b4_stride as isize * 4) };
     }
 
     mask_edges_chroma(
