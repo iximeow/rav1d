@@ -473,11 +473,11 @@ fn get_dc_sign_ctx(tx: TxfmSize, a: &[u8], l: &[u8]) -> c_uint {
 }
 
 #[inline]
-fn get_lo_ctx(
+fn get_lo_ctx_offsets(
     levels: &[u8],
     tx_class: TxClass,
     hi_mag: &mut u32,
-    ctx_offsets: Option<&[[u8; 5]; 5]>,
+    ctx_offsets: &[[u8; 5]; 5],
     x: u8,
     y: u8,
     stride: u8,
@@ -490,26 +490,42 @@ fn get_lo_ctx(
     // as putting them outside the `match` in an identical one trips up LLVM.
     let mut mag;
     let offset;
-    match ctx_offsets {
-        Some(ctx_offsets) => {
-            level(2, 1); // Bounds check all at once.
-            mag = level(0, 1) + level(1, 0);
-            debug_assert_matches!(tx_class, TxClass::TwoD);
-            mag += level(1, 1);
-            *hi_mag = mag;
-            mag += level(0, 2) + level(2, 0);
-            offset = ctx_offsets[cmp::min(y as usize, 4)][cmp::min(x as usize, 4)];
+    mag = level(0, 1) + level(1, 0);
+    debug_assert_matches!(tx_class, TxClass::TwoD);
+    mag += level(1, 1);
+    *hi_mag = mag;
+    mag += level(0, 2) + level(2, 0);
+    offset = ctx_offsets[cmp::min(y as usize, 4)][cmp::min(x as usize, 4)];
+    offset
+        + if mag > 512 {
+            4
+        } else {
+            ((mag + 64) >> 7) as u8
         }
-        None => {
-            debug_assert_matches!(tx_class, TxClass::H | TxClass::V);
-            level(1, 4); // Bounds check all at once.
-            mag = level(0, 1) + level(1, 0);
-            mag += level(0, 2);
-            *hi_mag = mag;
-            mag += level(0, 3) + level(0, 4);
-            offset = 26 + if y > 1 { 10 } else { y * 5 };
-        }
-    }
+}
+
+#[inline]
+fn get_lo_ctx(
+    levels: &[u8],
+    tx_class: TxClass,
+    hi_mag: &mut u32,
+    y: u8,
+    stride: u8,
+) -> u8 {
+    let stride = stride as usize;
+    let level = |y, x| levels[y * stride + x] as u32;
+
+    // Note that the first `mag` initialization is moved inside the `match`
+    // so that the different bounds checks can be done inside the `match`,
+    // as putting them outside the `match` in an identical one trips up LLVM.
+    let mut mag;
+    let offset;
+    debug_assert_matches!(tx_class, TxClass::H | TxClass::V);
+    mag = level(0, 1) + level(1, 0);
+    mag += level(0, 2);
+    *hi_mag = mag;
+    mag += level(0, 3) + level(0, 4);
+    offset = 26 + if y > 1 { 10 } else { y * 5 };
     offset
         + if mag > 512 {
             4
@@ -792,18 +808,14 @@ fn decode_coefs<BD: BitDepth>(
         let mut level_tok = tok * 0x41;
         let mut mag = 0;
 
-        let lo_ctx_offsets;
         let scan;
         let stride;
         match tx_class {
             TxClass::TwoD => {
-                let is_rect = tx.is_rect() as usize;
-                lo_ctx_offsets = Some(&dav1d_lo_ctx_offsets[is_rect + (tx as usize & is_rect)]);
                 scan = dav1d_scans[tx as usize];
                 stride = 4 << slh;
             }
             TxClass::H | TxClass::V => {
-                lo_ctx_offsets = None;
                 scan = &[];
                 stride = 16;
             }
@@ -900,7 +912,11 @@ fn decode_coefs<BD: BitDepth>(
         };
         levels[level_off] = level_tok as u8;
 
-        for i in (1..eob).rev() {
+        let mut i = eob - 1;
+        if tx_class == TxClass::TwoD {
+            assert!((i as usize) < scan.len());
+        }
+        while i > 0 {
             // ac
             let rc_i;
             match tx_class {
@@ -929,7 +945,13 @@ fn decode_coefs<BD: BitDepth>(
                 x as usize * stride as usize + y as usize
             };
             let level = &mut levels[level_off..];
-            ctx = get_lo_ctx(level, tx_class, &mut mag, lo_ctx_offsets, x, y, stride);
+            ctx = if tx_class == TxClass::TwoD {
+                let is_rect = tx.is_rect() as usize;
+                let lo_ctx_offsets = &dav1d_lo_ctx_offsets[is_rect + (tx as usize & is_rect)];
+                get_lo_ctx_offsets(level, tx_class, &mut mag, lo_ctx_offsets, x, y, stride)
+            } else {
+                get_lo_ctx(level, tx_class, &mut mag, y, stride)
+            };
             if tx_class == TxClass::TwoD {
                 y |= x;
             }
@@ -984,12 +1006,13 @@ fn decode_coefs<BD: BitDepth>(
                 debug_assert!(tok == tok_check as u32);
                 cf.set(rc_i, tok);
             }
+            i -= 1;
         }
         // dc
         ctx = if tx_class == TxClass::TwoD {
             0
         } else {
-            get_lo_ctx(levels, tx_class, &mut mag, lo_ctx_offsets, 0, 0, stride)
+            get_lo_ctx(levels, tx_class, &mut mag, 0, stride)
         };
         let mut dc_tok =
             rav1d_msac_decode_symbol_adapt4(&mut ts_c.msac, &mut lo_cdf[ctx as usize], 3) as c_uint;
