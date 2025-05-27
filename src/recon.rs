@@ -490,6 +490,7 @@ fn get_lo_ctx_offsets(
     // as putting them outside the `match` in an identical one trips up LLVM.
     let mut mag;
     let offset;
+    level(2, 1);
     mag = level(0, 1) + level(1, 0);
     debug_assert_matches!(tx_class, TxClass::TwoD);
     mag += level(1, 1);
@@ -521,6 +522,7 @@ fn get_lo_ctx(
     let mut mag;
     let offset;
     debug_assert_matches!(tx_class, TxClass::H | TxClass::V);
+    level(1, 4);
     mag = level(0, 1) + level(1, 0);
     mag += level(0, 2);
     *hi_mag = mag;
